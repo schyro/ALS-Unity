@@ -62,7 +62,8 @@ friction and rotation rate curve keys, mantle trace sizes) follow the values ALS
 
 ## 2. Character and animations: Quaternius (CC0 1.0)
 
-Files: `Assets/ALS/Art/Quaternius/Mannequin_UAL1.fbx`, `Assets/ALS/Art/Quaternius/Actions_UAL2.fbx`
+Files: `Assets/ALS/Art/Quaternius/Mannequin_UAL1.fbx`, `Assets/ALS/Art/Quaternius/Actions_UAL2.fbx`,
+`Assets/ALS/Art/Quaternius/Locomotion_UAL1_Backward.fbx` (derived from `Mannequin_UAL1.fbx`, see section 4)
 
 | Pack | Source | Used clips |
 |---|---|---|
@@ -85,8 +86,8 @@ Files: `Assets/ALS/Art/Mesh2Motion/M2M_Addon.fbx`, `Assets/ALS/Art/Mesh2Motion/M
 
 - Project: Mesh2Motion (<https://github.com/Mesh2Motion/mesh2motion-app>), commit
   `79f3f61a9852ef70234a5a4a7c13ed87f7a71833`
-- Source files: `static/animations/human-addon-animations.glb` (`Strafe_left`, `Strafe_right`,
-  `Walk_Backwards`, `Pushup`) and `static/animations/human-mocap-animations.glb` (`Turn_Left_90`,
+- Source files: `static/animations/human-addon-animations.glb` (`Strafe_left`, `Pushup`; the FBX
+  also holds `Strafe_right` and `Walk_Backwards`, which are not imported) and `static/animations/human-mocap-animations.glb` (`Turn_Left_90`,
   `Turn_Right_90`, `Turn_Left_180`, `Turn_Right_180`)
 - License: the repository states that all 3D models, rigs and animations are CC0 1.0 Universal
   (`LICENSE-CC0.MD`, copied to `Assets/ALS/Art/Mesh2Motion/License.txt`). Its code (MIT) is not used.
@@ -96,7 +97,14 @@ Files: `Assets/ALS/Art/Mesh2Motion/M2M_Addon.fbx`, `Assets/ALS/Art/Mesh2Motion/M
 The four FBX files were produced from the original GLB files with Blender 5.2 using
 `Tools/blender/convert_glb_to_fbx.py`: only the clips listed above were kept, the unused `*_leaf` end bones
 were removed, a keyed rest pose (`A_TPose`) was added as the first take, the rig was turned to face +Z and the
-result was exported as FBX. No animation data was edited. `Tools/blender/README.md` lists the exact commands.
+result was exported as FBX. No animation data was edited in these four files.
+
+`Locomotion_UAL1_Backward.fbx` holds three clips derived from `Mannequin_UAL1.fbx` with
+`Tools/blender/make_backward_clips.py`: `Walk_Bwd_Loop`, `Jog_Bwd_Loop` and `Crouch_Bwd_Loop` are `Walk_Loop`,
+`Jog_Fwd_Loop` and `Crouch_Fwd_Loop` reversed in time and shifted by half a cycle, with the forward lean of the
+spine reduced (walk and jog) and the neck and head counter-rotated. They remain under CC0 1.0.
+
+`Tools/blender/README.md` lists the exact commands.
 
 ## 5. Everything else
 

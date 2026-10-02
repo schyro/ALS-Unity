@@ -60,7 +60,6 @@ namespace ALSUnity.EditorTools
             anim.mantleLength = ALSAnimatorBuilder.Clip("ClimbUp_1m").length;
             anim.getUpBackLength = ALSAnimatorBuilder.Clip("LayToIdle").length;
             anim.getUpFrontLength = ALSAnimatorBuilder.Clip("Pushup").length;
-            anim.strafeClipSpeed = ALSAnimatorBuilder.StrafeTreeSpeed;
             anim.turn90Length = ALSAnimatorBuilder.Clip("Turn_Left_90").length;
             anim.turn180Length = ALSAnimatorBuilder.Clip("Turn_Left_180").length;
 
@@ -72,6 +71,10 @@ namespace ALSUnity.EditorTools
                 MeasureTurnCurve(probe, "Turn_Left_90"), MeasureTurnCurve(probe, "Turn_Right_90"),
                 MeasureTurnCurve(probe, "Turn_Left_180"), MeasureTurnCurve(probe, "Turn_Right_180")
             };
+            MeasureLocomotion(probe, ALSAnimatorBuilder.MoveClips, ALSAnimatorBuilder.MoveClipMirrored,
+                out anim.moveClipVelocities, out anim.moveClipLengths);
+            MeasureLocomotion(probe, ALSAnimatorBuilder.CrouchClips, null, out anim.crouchClipVelocities,
+                out anim.crouchClipLengths);
             MeasureLyingPose(probe, "LayToIdle", 0f, out ragdoll.faceUpHeadYaw, out ragdoll.faceUpHipsOffset);
             MeasureLyingPose(probe, "Pushup", anim.getUpFrontStart, out ragdoll.faceDownHeadYaw, out ragdoll.faceDownHipsOffset);
             Object.DestroyImmediate(probe);
@@ -125,6 +128,101 @@ namespace ALSUnity.EditorTools
                 curve.SmoothTangents(i, 0f);
             }
             return curve;
+        }
+
+        private static void MeasureLocomotion(GameObject probe, string[] clipNames, bool[] mirrored,
+            out Vector2[] velocities, out float[] lengths)
+        {
+            velocities = new Vector2[clipNames.Length];
+            lengths = new float[clipNames.Length];
+            var log = new System.Text.StringBuilder("ALS: stride velocities (m/s)");
+            for (int i = 0; i < clipNames.Length; i++)
+            {
+                AnimationClip clip = ALSAnimatorBuilder.Clip(clipNames[i]);
+                lengths[i] = clip.length;
+                velocities[i] = MeasureStrideVelocity(probe, clip);
+                if (mirrored != null && mirrored[i])
+                {
+                    velocities[i].x = -velocities[i].x;
+                }
+                log.AppendFormat(System.Globalization.CultureInfo.InvariantCulture, " {0}{1}=({2:0.00}, {3:0.00})",
+                    clipNames[i], mirrored != null && mirrored[i] ? " (mirrored)" : "", velocities[i].x, velocities[i].y);
+            }
+            Debug.Log(log.ToString());
+        }
+
+        /// <summary>
+        /// The ground velocity (x = right, y = forward, m/s) an in-place locomotion clip is animated for: the
+        /// opposite of the velocity of the ball of the supporting foot. The animation driver uses it to match
+        /// the playback rate and the stride length to the speed of the character.
+        /// </summary>
+        private static Vector2 MeasureStrideVelocity(GameObject probe, AnimationClip clip)
+        {
+            Animator animator = probe.GetComponent<Animator>();
+            Transform[] toes =
+            {
+                animator.GetBoneTransform(HumanBodyBones.LeftToes) ?? animator.GetBoneTransform(HumanBodyBones.LeftFoot),
+                animator.GetBoneTransform(HumanBodyBones.RightToes) ?? animator.GetBoneTransform(HumanBodyBones.RightFoot)
+            };
+
+            const int steps = 120;
+            const float contactHeight = 0.025f;
+            var positions = new Vector3[toes.Length, steps + 1];
+            for (int i = 0; i <= steps; i++)
+            {
+                clip.SampleAnimation(probe, clip.length * i / steps);
+                for (int foot = 0; foot < toes.Length; foot++)
+                {
+                    positions[foot, i] = probe.transform.InverseTransformPoint(toes[foot].position);
+                }
+            }
+            probe.transform.SetPositionAndRotation(Vector3.zero, Quaternion.identity);
+
+            // Floor height per foot: a low percentile, so single frames that dip below the ground do not count.
+            var floors = new float[toes.Length];
+            var heights = new float[steps + 1];
+            for (int foot = 0; foot < toes.Length; foot++)
+            {
+                for (int i = 0; i <= steps; i++)
+                {
+                    heights[i] = positions[foot, i].y;
+                }
+                System.Array.Sort(heights);
+                floors[foot] = heights[steps / 10];
+            }
+
+            // The body moves over the foot that carries it: the lower one, while it is on the ground (a run has
+            // flight phases in between). The median leaves out the frames in which that foot rolls off its toes.
+            float dt = clip.length / steps;
+            var sideways = new System.Collections.Generic.List<float>();
+            var forward = new System.Collections.Generic.List<float>();
+            for (int i = 0; i < steps; i++)
+            {
+                int support = -1;
+                float lowest = contactHeight;
+                for (int foot = 0; foot < toes.Length; foot++)
+                {
+                    float height = Mathf.Max(positions[foot, i].y, positions[foot, i + 1].y) - floors[foot];
+                    if (height < lowest)
+                    {
+                        lowest = height;
+                        support = foot;
+                    }
+                }
+                if (support >= 0)
+                {
+                    Vector3 velocity = (positions[support, i] - positions[support, i + 1]) / dt;
+                    sideways.Add(velocity.x);
+                    forward.Add(velocity.z);
+                }
+            }
+            if (forward.Count == 0)
+            {
+                return Vector2.zero;
+            }
+            sideways.Sort();
+            forward.Sort();
+            return new Vector2(sideways[sideways.Count / 2], forward[forward.Count / 2]);
         }
 
         /// <summary>

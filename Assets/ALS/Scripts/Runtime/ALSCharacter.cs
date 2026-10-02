@@ -12,8 +12,8 @@ namespace ALSUnity
     public class ALSCharacter : MonoBehaviour
     {
         [Header("Movement")]
-        public ALSMovementSettings standingSettings = new ALSMovementSettings(1.65f, 3.5f, 6f);
-        public ALSMovementSettings crouchingSettings = new ALSMovementSettings(1.1f, 1.8f, 1.8f);
+        public ALSMovementSettings standingSettings = new ALSMovementSettings(1.5f, 4f, 6.5f);
+        public ALSMovementSettings crouchingSettings = new ALSMovementSettings(0.9f, 1.5f, 1.5f);
         public ALSMovementModel movementModel = new ALSMovementModel();
 
         [Header("Air")]
@@ -41,15 +41,19 @@ namespace ALSUnity
         public float breakfallPlayRate = 1.35f;
 
         [Header("Desired state")]
-        public ALSRotationMode desiredRotationMode = ALSRotationMode.VelocityDirection;
+        public ALSRotationMode desiredRotationMode = ALSRotationMode.LookingDirection;
         public ALSGait desiredGait = ALSGait.Running;
         public ALSStance desiredStance = ALSStance.Standing;
 
         [Header("Looking direction / aiming")]
-        [Tooltip("Top speed (m/s) while side-stepping in the Looking Direction and Aiming rotation modes.")]
-        public float strafeSpeed = 1.1f;
-        [Tooltip("Top speed (m/s) while moving backwards in the Looking Direction and Aiming rotation modes.")]
-        public float backwardSpeed = 1.2f;
+        [Tooltip("Speed multiplier while moving backwards relative to the camera in the Looking Direction mode.")]
+        [Range(0.1f, 1f)] public float backwardSpeedScale = 0.8f;
+        [Tooltip("Top speed (m/s) while side-stepping in the Aiming mode.")]
+        public float aimStrafeSpeed = 1.2f;
+        [Tooltip("Velocity angle from the camera direction (degrees) past which the character moves backwards.")]
+        public float backwardEnterAngle = 115f;
+        [Tooltip("Velocity angle from the camera direction (degrees) below which the character moves forwards again.")]
+        public float backwardExitAngle = 95f;
         public float yawOffsetInterpSpeed = 8f;
 
         [Header("Collision")]
@@ -92,20 +96,23 @@ namespace ALSUnity
 
         /// <summary>
         /// Direction the character moves in relative to the camera in the Looking Direction / Aiming modes.
-        /// Always Forward in the Velocity Direction mode, while sprinting and while crouching.
+        /// Always Forward in the Velocity Direction mode and while sprinting.
         /// </summary>
         public ALSMovementDirection MovementDirection { get; private set; } = ALSMovementDirection.Forward;
 
         /// <summary>
-        /// Yaw offset (degrees) from the camera direction used in Looking Direction mode, so that the forward /
-        /// backward / strafe animations line up with the velocity (ALS' YawOffset curves).
+        /// Yaw offset (degrees) of the hips from the camera direction in the Looking Direction mode. It lines the
+        /// forward or backward animation up with the velocity (the role of ALS' YawOffset curves); the upper body
+        /// is turned back toward the camera by the animation layer.
         /// </summary>
         public float YawOffset { get; private set; }
 
-        /// <summary>True when movement is animated relative to the camera instead of along the velocity.</summary>
+        /// <summary>True when the character keeps facing the camera direction instead of the velocity.</summary>
         public bool UsesDirectionalMovement =>
-            RotationMode != ALSRotationMode.VelocityDirection && Stance == ALSStance.Standing &&
-            Gait != ALSGait.Sprinting;
+            RotationMode != ALSRotationMode.VelocityDirection && Gait != ALSGait.Sprinting;
+
+        /// <summary>True when the whole body faces the camera and the feet side-step (standing aim).</summary>
+        public bool UsesStrafing => RotationMode == ALSRotationMode.Aiming && Stance == ALSStance.Standing;
 
         /// <summary>
         /// Vertical movement that was not explained by walking along the ground plane (stair steps, ledge snaps).
@@ -503,8 +510,9 @@ namespace ALSUnity
             verticalVelocity = jumpVelocity;
             Velocity = new Vector3(Velocity.x, verticalVelocity, Velocity.z);
             SetMovementState(ALSMovementState.InAir);
-            // Set the new In Air Rotation to the velocity rotation if speed is greater than 1 m/s.
-            InAirYaw = Speed > 1f ? LastVelocityYaw : ActorYaw;
+            // Set the new In Air Rotation to the velocity rotation if speed is greater than 1 m/s. The camera
+            // relative modes keep the current facing instead, so a backward jump does not turn the character.
+            InAirYaw = Speed > 1f && !UsesDirectionalMovement ? LastVelocityYaw : ActorYaw;
             Jumped?.Invoke();
         }
 
@@ -789,28 +797,26 @@ namespace ALSUnity
         private float GetMaxGroundSpeed()
         {
             float maxSpeed = CurrentSettings.GetSpeedForGait(AllowedGait);
-            if (RotationMode == ALSRotationMode.VelocityDirection || Stance != ALSStance.Standing ||
-                CurrentAcceleration.sqrMagnitude < 1e-6f)
+            if (RotationMode == ALSRotationMode.VelocityDirection || CurrentAcceleration.sqrMagnitude < 1e-6f)
             {
                 return maxSpeed;
             }
 
-            // The animation set only has slow side and back steps, so the character only runs when heading
-            // (roughly) where the camera looks, and walks while aiming.
+            float delta = Mathf.Abs(Mathf.DeltaAngle(AimingYaw, ALSMath.YawOf(CurrentAcceleration)));
             if (RotationMode == ALSRotationMode.Aiming)
             {
+                // Walk while aiming. The side steps of the animation set are slower than its walk.
                 maxSpeed = Mathf.Min(maxSpeed, CurrentSettings.walkSpeed);
+                if (UsesStrafing)
+                {
+                    float sideways = Mathf.Abs(Mathf.Sin(delta * Mathf.Deg2Rad));
+                    maxSpeed = Mathf.Lerp(maxSpeed, Mathf.Min(maxSpeed, aimStrafeSpeed), sideways);
+                }
+                return maxSpeed;
             }
-            float delta = Mathf.Abs(Mathf.DeltaAngle(AimingYaw, ALSMath.YawOf(CurrentAcceleration)));
-            if (delta > 110f)
-            {
-                return Mathf.Min(maxSpeed, backwardSpeed);
-            }
-            if (delta > 70f)
-            {
-                return Mathf.Min(maxSpeed, strafeSpeed);
-            }
-            return maxSpeed;
+
+            // Looking Direction: backpedalling is a bit slower than moving where the camera looks.
+            return maxSpeed * Mathf.Lerp(1f, backwardSpeedScale, Mathf.InverseLerp(100f, 140f, delta));
         }
 
         private void AirMove(float dt)
@@ -1146,45 +1152,48 @@ namespace ALSUnity
         // Rotation
         // ------------------------------------------------------------------------------------------
 
-        // ALS YawOffset_FB / YawOffset_LR curves: character yaw offset over the velocity angle relative to the camera.
-        private static readonly AnimationCurve YawOffsetForwardBack = ALSMath.LinearCurve(
-            -180f, 0f, -120f, 60f, -90f, 0f, -60f, -60f, 0f, 0f, 60f, 60f, 90f, 0f, 120f, -60f, 180f, 0f);
-        private static readonly AnimationCurve YawOffsetLeft = ALSMath.LinearCurve(
-            -180f, 0f, -135f, -45f, -90f, 0f, -45f, 0f, 0f, 0f, 45f, -45f, 90f, 0f, 135f, 45f, 180f, 0f);
-        private static readonly AnimationCurve YawOffsetRight = ALSMath.LinearCurve(
-            -180f, 0f, -135f, -45f, -90f, 0f, -45f, 45f, 0f, 0f, 45f, 0f, 90f, 0f, 135f, 45f, 180f, 0f);
-
         private void UpdateMovementDirection(float dt)
         {
-            float targetOffset = 0f;
-            if (!UsesDirectionalMovement)
+            bool moving = (IsMoving && HasMovementInput) || Speed > 1.5f;
+            if (UsesDirectionalMovement && moving && !UsesStrafing)
+            {
+                // The animation set runs forwards and backwards only, so the hips line up with the velocity:
+                // they point along it while it is within the forward range of the camera direction, and away
+                // from it (the character backpedals) beyond that. The two thresholds keep the character from
+                // flipping back and forth around the boundary.
+                float delta = Mathf.DeltaAngle(AimingYaw, LastVelocityYaw);
+                float angle = Mathf.Abs(delta);
+                if (MovementDirection != ALSMovementDirection.Backward)
+                {
+                    MovementDirection = angle > backwardEnterAngle
+                        ? ALSMovementDirection.Backward
+                        : ALSMovementDirection.Forward;
+                }
+                else if (angle < backwardExitAngle)
+                {
+                    MovementDirection = ALSMovementDirection.Forward;
+                }
+                float targetOffset = MovementDirection == ALSMovementDirection.Backward
+                    ? Mathf.DeltaAngle(180f, delta)
+                    : delta;
+                YawOffset = ALSMath.InterpTo(YawOffset, targetOffset, dt, yawOffsetInterpSpeed);
+                return;
+            }
+
+            if (UsesStrafing && moving)
+            {
+                // The Movement Direction represents the direction the character is moving relative to the camera
+                // while it side-steps.
+                float delta = Mathf.DeltaAngle(AimingYaw, LastVelocityYaw);
+                MovementDirection = ALSMath.CalculateQuadrant(MovementDirection, 70f, -70f, 110f, -110f, 5f, delta);
+            }
+            else
             {
                 MovementDirection = ALSMovementDirection.Forward;
             }
-            else if ((IsMoving && HasMovementInput) || Speed > 1.5f)
-            {
-                // The Movement Direction represents the direction the character is moving relative to the camera
-                // during the Looking Direction / Aiming rotation modes.
-                float delta = Mathf.DeltaAngle(AimingYaw, LastVelocityYaw);
-                MovementDirection = ALSMath.CalculateQuadrant(MovementDirection, 70f, -70f, 110f, -110f, 5f, delta);
 
-                if (RotationMode == ALSRotationMode.LookingDirection)
-                {
-                    switch (MovementDirection)
-                    {
-                        case ALSMovementDirection.Left:
-                            targetOffset = YawOffsetLeft.Evaluate(delta);
-                            break;
-                        case ALSMovementDirection.Right:
-                            targetOffset = YawOffsetRight.Evaluate(delta);
-                            break;
-                        default:
-                            targetOffset = YawOffsetForwardBack.Evaluate(delta);
-                            break;
-                    }
-                }
-            }
-            YawOffset = ALSMath.InterpTo(YawOffset, targetOffset, dt, yawOffsetInterpSpeed);
+            // Keep the offset on the current facing so the next camera relative movement starts from it.
+            YawOffset = Mathf.DeltaAngle(AimingYaw, ActorYaw);
         }
 
         private void UpdateGroundedRotation(float dt)
@@ -1200,16 +1209,17 @@ namespace ALSUnity
                         // Velocity Direction Rotation
                         SmoothCharacterRotation(LastVelocityYaw, 800f, groundedRotationRate, dt);
                     }
-                    else if (RotationMode == ALSRotationMode.LookingDirection)
+                    else if (UsesStrafing)
                     {
-                        // Looking Direction Rotation
-                        // Sprinting and crouching only have forward animations, so they follow the velocity.
-                        float yaw = UsesDirectionalMovement ? AimingYaw + YawOffset : LastVelocityYaw;
-                        SmoothCharacterRotation(yaw, 500f, groundedRotationRate, dt);
+                        // Aiming Rotation
+                        SmoothCharacterRotation(AimingYaw, 1000f, 20f, dt);
                     }
                     else
                     {
-                        SmoothCharacterRotation(AimingYaw, 1000f, 20f, dt);
+                        // Looking Direction Rotation
+                        // Sprinting only has a forward animation, so it follows the velocity.
+                        float yaw = UsesDirectionalMovement ? AimingYaw + YawOffset : LastVelocityYaw;
+                        SmoothCharacterRotation(yaw, 500f, groundedRotationRate, dt);
                     }
                 }
                 else if (RotationMode == ALSRotationMode.Aiming)

@@ -20,6 +20,12 @@ namespace ALSUnity.EditorTools
             "Roll"
         };
 
+        // Backward loops built from the UAL1 forward loops by Tools/blender/make_backward_clips.py.
+        public static readonly string[] Ual1BackwardClips =
+        {
+            "Walk_Bwd_Loop", "Jog_Bwd_Loop", "Crouch_Bwd_Loop"
+        };
+
         // Clips used from "Universal Animation Library 2" (UAL2).
         public static readonly string[] Ual2Clips =
         {
@@ -29,7 +35,7 @@ namespace ALSUnity.EditorTools
         // Clips used from the Mesh2Motion animation set.
         public static readonly string[] M2MAddonClips =
         {
-            "Strafe_left", "Strafe_right", "Walk_Backwards", "Pushup"
+            "Strafe_left", "Pushup"
         };
 
         public static readonly string[] M2MMocapClips =
@@ -39,7 +45,8 @@ namespace ALSUnity.EditorTools
 
         public static readonly string[] AllModels =
         {
-            ALSAssetPaths.Ual1Model, ALSAssetPaths.Ual2Model, ALSAssetPaths.M2MAddonModel, ALSAssetPaths.M2MMocapModel
+            ALSAssetPaths.Ual1Model, ALSAssetPaths.Ual1BackwardModel, ALSAssetPaths.Ual2Model,
+            ALSAssetPaths.M2MAddonModel, ALSAssetPaths.M2MMocapModel
         };
 
         [MenuItem("ALS/Build Steps/1. Configure Model Imports")]
@@ -48,12 +55,13 @@ namespace ALSUnity.EditorTools
             // Every file builds its own Humanoid avatar from its "A_TPose" take; the clips are retargeted onto
             // the mannequin in the first file.
             ConfigureModel(ALSAssetPaths.Ual1Model, Ual1Clips);
+            ConfigureModel(ALSAssetPaths.Ual1BackwardModel, Ual1BackwardClips);
             ConfigureModel(ALSAssetPaths.Ual2Model, Ual2Clips);
             ConfigureModel(ALSAssetPaths.M2MAddonModel, M2MAddonClips);
             ConfigureModel(ALSAssetPaths.M2MMocapModel, M2MMocapClips);
         }
 
-        private static readonly string[] LoopingClips = { "Strafe_left", "Strafe_right", "Walk_Backwards" };
+        private static readonly string[] LoopingClips = { "Strafe_left" };
 
         public static void ConfigureModel(string path, string[] wantedClips)
         {

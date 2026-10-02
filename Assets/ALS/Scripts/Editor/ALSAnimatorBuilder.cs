@@ -11,20 +11,22 @@ namespace ALSUnity.EditorTools
     /// </summary>
     public static class ALSAnimatorBuilder
     {
-        // Blend tree thresholds (m/s) for the standing locomotion clips and the ground speed each clip covers at
-        // playback rate 1. The time scale of every clip is threshold / natural speed, so feet do not slide at
-        // the threshold speeds while each gait still shows mostly "its" clip.
-        public const float WalkThreshold = 1.2f;
-        public const float WalkNaturalSpeed = 0.975f;
-        public const float JogThreshold = 4.4f;
-        public const float JogNaturalSpeed = 5.36f;
-        public const float SprintThreshold = 6.8f;
-        public const float SprintNaturalSpeed = 8.25f;
+        // Clips of the standing locomotion blend, in the order of ALSCharacterAnimation.MoveClip. The weights are
+        // set from code, which also matches the playback rate and the stride length to the character speed.
+        // Both side steps use the Mesh2Motion clip "Strafe_left", which steps to the character's right once the
+        // rig faces +Z (see the stride velocities logged by ALSCharacterPrefabBuilder). The step to the left is
+        // the same clip mirrored; "Strafe_right" is not used because its feet move unevenly.
+        public static readonly string[] MoveClips =
+        {
+            "Walk_Loop", "Jog_Fwd_Loop", "Sprint_Loop", "Walk_Bwd_Loop", "Jog_Bwd_Loop", "Strafe_left", "Strafe_left"
+        };
+        public static readonly bool[] MoveClipMirrored = { false, false, false, false, false, true, false };
 
-        // Camera relative strafe blend: every clip is time scaled to cover StrafeTreeSpeed m/s at rate 1.
-        public const float StrafeTreeSpeed = 1.2f;
-        public const float BackwardNaturalSpeed = 1f;
-        public const float StrafeNaturalSpeed = 0.73f;
+        // Clips of the crouched locomotion blend: forward, backward.
+        public static readonly string[] CrouchClips = { "Crouch_Fwd_Loop", "Crouch_Bwd_Loop" };
+
+        public const string MoveWeightPrefix = "MoveWeight";
+        public const string CrouchWeightPrefix = "CrouchWeight";
 
         [MenuItem("ALS/Build Steps/2. Build Animator Controller")]
         public static AnimatorController Build()
@@ -33,13 +35,17 @@ namespace ALSUnity.EditorTools
             AssetDatabase.DeleteAsset(ALSAssetPaths.AnimatorController);
             AnimatorController controller = AnimatorController.CreateAnimatorControllerAtPath(ALSAssetPaths.AnimatorController);
 
-            controller.AddParameter("Speed", AnimatorControllerParameterType.Float);
             AddFloat(controller, "MoveRate", 1f);
             AddFloat(controller, "CrouchRate", 1f);
-            AddFloat(controller, "StrafeRate", 1f);
             AddFloat(controller, "ActionRate", 1f);
-            AddFloat(controller, "DirectionX", 0f);
-            AddFloat(controller, "DirectionY", 1f);
+            for (int i = 0; i < MoveClips.Length; i++)
+            {
+                AddFloat(controller, MoveWeightPrefix + i, i == 0 ? 1f : 0f);
+            }
+            for (int i = 0; i < CrouchClips.Length; i++)
+            {
+                AddFloat(controller, CrouchWeightPrefix + i, i == 0 ? 1f : 0f);
+            }
 
             AnimatorControllerLayer[] layers = controller.layers;
             layers[0].name = "Base";
@@ -50,51 +56,13 @@ namespace ALSUnity.EditorTools
             AnimatorState idle = AddState(machine, "Idle", Clip("Idle_Loop"), 0, 0);
             machine.defaultState = idle;
 
-            // Standing locomotion: walk -> jog -> sprint over the character speed.
-            AnimatorState move = controller.CreateBlendTreeInController("Move", out BlendTree tree, 0);
-            tree.name = "Move";
-            tree.blendType = BlendTreeType.Simple1D;
-            tree.blendParameter = "Speed";
-            tree.useAutomaticThresholds = false;
-            tree.AddChild(Clip("Walk_Loop"), WalkThreshold);
-            tree.AddChild(Clip("Jog_Fwd_Loop"), JogThreshold);
-            tree.AddChild(Clip("Sprint_Loop"), SprintThreshold);
-            ChildMotion[] children = tree.children;
-            children[0].timeScale = WalkThreshold / WalkNaturalSpeed;
-            children[1].timeScale = JogThreshold / JogNaturalSpeed;
-            children[2].timeScale = SprintThreshold / SprintNaturalSpeed;
-            tree.children = children;
-            move.speedParameter = "MoveRate";
-            move.speedParameterActive = true;
-            move.iKOnFeet = true;
+            // Standing locomotion: forward walk / jog / sprint, backward walk / jog and side steps.
+            AnimatorState move = AddBlendState(controller, "Move", MoveClips, MoveClipMirrored, MoveWeightPrefix, "MoveRate");
             Place(machine, move, 0, 1);
 
-            // Camera relative walking (Looking Direction / Aiming): forward, backward and side steps blended by
-            // the velocity direction relative to the character.
-            AnimatorState strafe = controller.CreateBlendTreeInController("Strafe", out BlendTree strafeTree, 0);
-            strafeTree.name = "Strafe";
-            strafeTree.blendType = BlendTreeType.SimpleDirectional2D;
-            strafeTree.blendParameter = "DirectionX";
-            strafeTree.blendParameterY = "DirectionY";
-            strafeTree.AddChild(Clip("Walk_Loop"), new Vector2(0f, 1f));
-            strafeTree.AddChild(Clip("Walk_Backwards"), new Vector2(0f, -1f));
-            strafeTree.AddChild(Clip("Strafe_left"), new Vector2(-1f, 0f));
-            strafeTree.AddChild(Clip("Strafe_right"), new Vector2(1f, 0f));
-            ChildMotion[] strafeChildren = strafeTree.children;
-            strafeChildren[0].timeScale = StrafeTreeSpeed / WalkNaturalSpeed;
-            strafeChildren[1].timeScale = StrafeTreeSpeed / BackwardNaturalSpeed;
-            strafeChildren[2].timeScale = StrafeTreeSpeed / StrafeNaturalSpeed;
-            strafeChildren[3].timeScale = StrafeTreeSpeed / StrafeNaturalSpeed;
-            strafeTree.children = strafeChildren;
-            strafe.speedParameter = "StrafeRate";
-            strafe.speedParameterActive = true;
-            strafe.iKOnFeet = true;
-            Place(machine, strafe, 0, 2);
-
             AddState(machine, "CrouchIdle", Clip("Crouch_Idle_Loop"), 1, 0);
-            AnimatorState crouchMove = AddState(machine, "CrouchMove", Clip("Crouch_Fwd_Loop"), 1, 1);
-            crouchMove.speedParameter = "CrouchRate";
-            crouchMove.speedParameterActive = true;
+            AnimatorState crouchMove = AddBlendState(controller, "CrouchMove", CrouchClips, null, CrouchWeightPrefix, "CrouchRate");
+            Place(machine, crouchMove, 1, 1);
 
             AddState(machine, "JumpStart", Clip("Jump_Start"), 2, 0);
             AddState(machine, "Fall", Clip("Jump_Loop"), 2, 1);
@@ -139,6 +107,50 @@ namespace ALSUnity.EditorTools
                 type = AnimatorControllerParameterType.Float,
                 defaultFloat = defaultValue
             });
+        }
+
+        /// <summary>
+        /// A state with a direct blend tree: one weight parameter per clip. Unity keeps the clips of a blend tree
+        /// in step (same normalized time), so clips with the same foot phase blend without the feet crossing.
+        /// Every locomotion loop plants the left foot at the start of its cycle; a mirrored clip starts on the
+        /// other foot and is therefore offset by half a cycle.
+        /// </summary>
+        private static AnimatorState AddBlendState(AnimatorController controller, string name, string[] clips,
+            bool[] mirrored, string weightPrefix, string rateParameter)
+        {
+            AnimatorState state = controller.CreateBlendTreeInController(name, out BlendTree tree, 0);
+            tree.name = name;
+            tree.blendType = BlendTreeType.Direct;
+            foreach (string clip in clips)
+            {
+                tree.AddChild(Clip(clip));
+            }
+            ChildMotion[] children = tree.children;
+            for (int i = 0; i < children.Length; i++)
+            {
+                children[i].directBlendParameter = weightPrefix + i;
+                children[i].timeScale = 1f;
+                if (mirrored != null && mirrored[i])
+                {
+                    children[i].mirror = true;
+                    children[i].cycleOffset = 0.5f;
+                }
+            }
+            tree.children = children;
+
+            var serializedTree = new SerializedObject(tree);
+            SerializedProperty normalized = serializedTree.FindProperty("m_NormalizedBlendValues");
+            if (normalized != null)
+            {
+                normalized.boolValue = true;
+                serializedTree.ApplyModifiedPropertiesWithoutUndo();
+            }
+
+            state.speedParameter = rateParameter;
+            state.speedParameterActive = true;
+            state.iKOnFeet = true;
+            state.writeDefaultValues = true;
+            return state;
         }
 
         private static AnimatorState AddState(AnimatorStateMachine machine, string name, Motion motion, int column, int row)

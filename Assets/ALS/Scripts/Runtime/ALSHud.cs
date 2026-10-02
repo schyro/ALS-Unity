@@ -5,37 +5,26 @@ using UnityEngine.InputSystem;
 namespace ALSUnity
 {
     /// <summary>
-    /// On-screen controls reference and live character state. F1 toggles the panels, F2 switches between
-    /// English and Turkish.
+    /// On-screen controls reference and live character state. F1 toggles the panels.
     /// </summary>
     public class ALSHud : MonoBehaviour
     {
-        public enum Language
-        {
-            Auto,
-            English,
-            Turkish
-        }
-
         public ALSCharacter character;
         public bool visible = true;
-        [Tooltip("Auto follows the system language.")]
-        public Language language = Language.Auto;
 
         private GUIStyle panelStyle;
         private GUIStyle titleStyle;
         private GUIStyle textStyle;
         private GUIStyle keyStyle;
         private Texture2D panelTexture;
-        private bool turkish;
 
         private static readonly string[] Keys =
         {
             "W A S D", "Mouse", "Space", "Left Shift", "Left Ctrl", "C / Left Alt", "Q", "X", "Right Mouse",
-            "1 / 2", "V", "R", "F1 / F2 / Esc"
+            "1 / 2", "V", "R", "F1 / Esc"
         };
 
-        private static readonly string[] English =
+        private static readonly string[] Descriptions =
         {
             "Move (camera relative)",
             "Look",
@@ -46,44 +35,11 @@ namespace ALSUnity
             "Roll",
             "Ragdoll on / off",
             "Aim (hold)",
-            "Rotation mode: velocity / looking direction",
+            "Rotation mode: velocity direction / looking direction",
             "Switch camera shoulder",
             "Reset to start",
-            "Panel / language / release the mouse"
+            "Panel / release the mouse"
         };
-
-        private static readonly string[] Turkish =
-        {
-            "Hareket (kameraya göre)",
-            "Bakış",
-            "Zıpla / engele tırman (yön tuşuyla) / ayağa kalk",
-            "Sprint (basılı tut)",
-            "Yürüme / koşma geçişi",
-            "Çömel (çift bas: yuvarlan)",
-            "Yuvarlan",
-            "Ragdoll aç / kapat",
-            "Nişan al (basılı tut)",
-            "Dönüş modu: hız yönü / bakış yönü",
-            "Kamera omzunu değiştir",
-            "Başlangıca dön",
-            "Panel / dil / fareyi serbest bırak"
-        };
-
-        private static readonly string[] StateLabelsEnglish =
-        {
-            "Controls", "Character state", "State", "Action", "Gait", "Stance", "Rotation", "Speed", "Animation"
-        };
-
-        private static readonly string[] StateLabelsTurkish =
-        {
-            "Kontroller", "Karakter durumu", "Durum", "Eylem", "Yürüyüş", "Duruş", "Dönüş", "Hız", "Animasyon"
-        };
-
-        private void Awake()
-        {
-            turkish = language == Language.Turkish ||
-                      (language == Language.Auto && Application.systemLanguage == SystemLanguage.Turkish);
-        }
 
         private void Update()
         {
@@ -95,10 +51,6 @@ namespace ALSUnity
             if (keyboard.f1Key.wasPressedThisFrame)
             {
                 visible = !visible;
-            }
-            if (keyboard.f2Key.wasPressedThisFrame)
-            {
-                turkish = !turkish;
             }
         }
 
@@ -152,17 +104,14 @@ namespace ALSUnity
             float width = Screen.width / scale;
             float height = Screen.height / scale;
 
-            string[] descriptions = turkish ? Turkish : English;
-            string[] labels = turkish ? StateLabelsTurkish : StateLabelsEnglish;
-
             GUILayout.BeginArea(new Rect(12f, 12f, 440f, height - 24f));
             GUILayout.BeginVertical(panelStyle);
-            GUILayout.Label(labels[0], titleStyle);
+            GUILayout.Label("Controls", titleStyle);
             for (int i = 0; i < Keys.Length; i++)
             {
                 GUILayout.BeginHorizontal();
                 GUILayout.Label(Keys[i], keyStyle, GUILayout.Width(112f));
-                GUILayout.Label(descriptions[i], textStyle);
+                GUILayout.Label(Descriptions[i], textStyle);
                 GUILayout.EndHorizontal();
             }
             GUILayout.EndVertical();
@@ -172,16 +121,18 @@ namespace ALSUnity
             {
                 GUILayout.BeginArea(new Rect(width - 272f, 12f, 260f, height - 24f));
                 GUILayout.BeginVertical(panelStyle);
-                GUILayout.Label(labels[1], titleStyle);
-                StateRow(labels[2], character.MovementState.ToString());
-                StateRow(labels[3], character.MovementAction.ToString());
-                StateRow(labels[4], character.Gait.ToString());
-                StateRow(labels[5], character.Stance.ToString());
-                StateRow(labels[6], character.RotationMode.ToString());
-                StateRow(labels[7], character.Speed.ToString("0.00", CultureInfo.InvariantCulture) + " m/s");
+                GUILayout.Label("Character state", titleStyle);
+                StateRow("State", character.MovementState.ToString());
+                StateRow("Action", character.MovementAction.ToString());
+                StateRow("Gait", character.Gait.ToString());
+                StateRow("Stance", character.Stance.ToString());
+                StateRow("Rotation", character.RotationMode.ToString());
+                StateRow("Speed", character.Speed.ToString("0.00", CultureInfo.InvariantCulture) + " m/s");
                 if (character.Animation != null)
                 {
-                    StateRow(labels[8], character.Animation.CurrentState.ToString());
+                    StateRow("Animation", character.Animation.CurrentState.ToString());
+                    StateRow("Play rate", character.Animation.PlayRate.ToString("0.00", CultureInfo.InvariantCulture));
+                    StateRow("Stride", character.Animation.StrideScale.ToString("0.00", CultureInfo.InvariantCulture));
                 }
                 GUILayout.EndVertical();
                 GUILayout.EndArea();

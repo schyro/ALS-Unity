@@ -17,7 +17,6 @@ namespace ALSUnity
             None,
             Idle,
             Move,
-            Strafe,
             CrouchIdle,
             CrouchMove,
             JumpStart,
@@ -33,19 +32,45 @@ namespace ALSUnity
             TurnRight180
         }
 
+        // Order of the clips in the standing locomotion blend (ALSAnimatorBuilder.MoveClips).
+        private enum MoveClip
+        {
+            WalkForward,
+            JogForward,
+            SprintForward,
+            WalkBackward,
+            JogBackward,
+            StrafeLeft,
+            StrafeRight,
+            Count
+        }
+
         [Header("Locomotion blending")]
         public float moveBlendTime = 0.2f;
         public float stopBlendTime = 0.25f;
         public float stanceBlendTime = 0.25f;
-        public float directionBlendTime = 0.25f;
-        [Tooltip("Slowest playback used for the walk cycle when moving slower than the walk speed.")]
-        public float minMoveRate = 0.55f;
-        [Tooltip("Ground speed (m/s) of the crouch walk clip at playback rate 1.")]
-        public float crouchClipSpeed = 0.75f;
-        [Tooltip("Ground speed (m/s) of the strafe blend tree at playback rate 1.")]
-        public float strafeClipSpeed = 1.2f;
-        [Tooltip("Damping (seconds) of the speed that drives the locomotion blend.")]
-        public float speedDampTime = 0.06f;
+        [Tooltip("How fast the walk / jog / sprint weights follow the speed.")]
+        public float gaitBlendInterpSpeed = 8f;
+        [Tooltip("How fast the forward / backward / side step weights follow the movement direction.")]
+        public float directionBlendInterpSpeed = 10f;
+
+        // The clips are animated for one speed each. Any other speed is reached by changing the playback rate
+        // (cadence) and the stride length together, so the feet neither slide nor hurry (ALS' stride blend and
+        // play rate).
+        [Header("Speed matching")]
+        [Tooltip("Share of a slow-down that shortens the stride; the rest slows the playback down. Kept high so a " +
+                 "run that is slower than its clip keeps its tempo instead of looking like slow motion.")]
+        [Range(0f, 1f)] public float shortStrideShare = 0.9f;
+        [Tooltip("Share of a speed-up that lengthens the stride; the rest speeds the playback up.")]
+        [Range(0f, 1f)] public float longStrideShare = 0.5f;
+        public float minStrideScale = 0.3f;
+        public float maxStrideScale = 1.25f;
+        public float maxCrouchStrideScale = 1.4f;
+        public float minPlayRate = 0.5f;
+        public float maxPlayRate = 1.8f;
+        public float strideInterpSpeed = 12f;
+        [Tooltip("How far (m) the hips drop per unit of stride scale above 1, so the legs can reach.")]
+        public float pelvisDropPerStride = 0.14f;
 
         [Header("Jump / fall / land")]
         [Tooltip("Normalized time the jump start clip is entered at (skips the anticipation crouch).")]
@@ -105,12 +130,21 @@ namespace ALSUnity
         [Tooltip("Multiplier on the in-air lean over the vertical velocity (m/s).")]
         public AnimationCurve leanInAir = ALSMath.SmoothCurve(-40f, 0f, -32.8f, -0.12f, -22.5f, -0.93f, -12.5f, -0.79f, 0f, 1f, 10f, 1f);
 
-        [Header("Head look")]
+        // The upper body keeps facing where the camera looks while the hips follow the movement (ALS' aim offset
+        // and spine rotation).
+        [Header("Aim offset")]
         public bool enableHeadLook = true;
         [Range(0f, 1f)] public float headLookWeight = 0.75f;
-        [Tooltip("The head stops following the camera when it points further than this away from the body.")]
-        public float headLookMaxAngle = 100f;
-        public float headLookInterpSpeed = 5f;
+        [Tooltip("The upper body stops following the camera when it points further than this away from the body.")]
+        public float headLookMaxAngle = 150f;
+        public float headLookInterpSpeed = 6f;
+        public float headMaxYaw = 65f;
+        public float headMaxPitch = 35f;
+        [Tooltip("Share of the camera angle taken by the spine while moving relative to the camera.")]
+        [Range(0f, 1f)] public float spineTwistWeight = 0.7f;
+        [Tooltip("Share of the camera angle taken by the spine otherwise.")]
+        [Range(0f, 1f)] public float spineIdleTwistWeight = 0.2f;
+        public float spineMaxTwist = 60f;
 
         [Header("Foot IK")]
         public bool enableFootIK = true;
@@ -137,6 +171,16 @@ namespace ALSUnity
         public float getUpFrontLength = 1.5f;
         public float turn90Length = 2f;
         public float turn180Length = 2f;
+        [Tooltip("Ground velocity (x = right, y = forward, m/s) each standing locomotion clip is animated for.")]
+        public Vector2[] moveClipVelocities =
+        {
+            new Vector2(0f, 0.98f), new Vector2(0f, 5.9f), new Vector2(0f, 8.9f), new Vector2(0f, -0.98f),
+            new Vector2(0f, -5.9f), new Vector2(-0.7f, 0f), new Vector2(0.7f, 0f)
+        };
+        public float[] moveClipLengths = { 1.333f, 0.933f, 0.667f, 1.333f, 0.933f, 0.958f, 0.958f };
+        [Tooltip("Ground velocity each crouched locomotion clip is animated for. Order: forward, backward.")]
+        public Vector2[] crouchClipVelocities = { new Vector2(0f, 0.72f), new Vector2(0f, -0.72f) };
+        public float[] crouchClipLengths = { 2f, 2f };
         [Tooltip("How far (0-1) each turn clip has rotated over its normalized time. Order: left 90, right 90, left 180, right 180.")]
         public AnimationCurve[] turnRotationCurves =
         {
@@ -149,20 +193,37 @@ namespace ALSUnity
         public float FootIKWeight => ikWeight;
         public Animator Animator => animator;
 
-        private static readonly int SpeedParam = Animator.StringToHash("Speed");
+        /// <summary>Playback rate of the current locomotion blend.</summary>
+        public float PlayRate { get; private set; } = 1f;
+
+        /// <summary>Stride length of the current locomotion blend relative to the clips (1 = as animated).</summary>
+        public float StrideScale { get; private set; } = 1f;
+
         private static readonly int MoveRateParam = Animator.StringToHash("MoveRate");
         private static readonly int CrouchRateParam = Animator.StringToHash("CrouchRate");
-        private static readonly int StrafeRateParam = Animator.StringToHash("StrafeRate");
         private static readonly int ActionRateParam = Animator.StringToHash("ActionRate");
-        private static readonly int DirectionXParam = Animator.StringToHash("DirectionX");
-        private static readonly int DirectionYParam = Animator.StringToHash("DirectionY");
 
         private int[] stateHashes;
+        private int[] moveWeightParams;
+        private int[] crouchWeightParams;
 
         private ALSCharacter character;
         private Animator animator;
         private Transform head;
+        private Transform neck;
+        private Transform[] spine;
         private Vector3 baseLocalPosition;
+
+        // Locomotion blend
+        private readonly float[] moveWeights = new float[(int)MoveClip.Count];
+        private readonly float[] crouchWeights = new float[2];
+        // Weights of moving forward, right, backward and left relative to the character.
+        private readonly float[] directionWeights = { 1f, 0f, 0f, 0f };
+        private float runBlend;
+        private float sprintBlend;
+        private float strideBlend;
+        private Vector3 strideAxis = Vector3.forward;
+        private Vector3 stridePivot;
 
         // Current state timing
         private float stateTime;
@@ -178,7 +239,6 @@ namespace ALSUnity
         private float queuedLength;
 
         private Vector2 lean;
-        private Vector2 strafeDirection = new Vector2(0f, 1f);
         private float stepOffset;
         private float landDip;
         private float landDipVelocity;
@@ -188,6 +248,9 @@ namespace ALSUnity
         private float turnProgress;
         private AnimationCurve turnCurve;
         private float lookWeight;
+        private float lookYaw;
+        private float lookPitch;
+        private float spineShare;
 
         private float ikWeight;
         private float pelvisOffset;
@@ -205,9 +268,34 @@ namespace ALSUnity
         {
             animator = GetComponent<Animator>();
             character = GetComponentInParent<ALSCharacter>();
-            head = animator.isHuman ? animator.GetBoneTransform(HumanBodyBones.Head) : null;
+            var spineBones = new System.Collections.Generic.List<Transform>();
+            if (animator.isHuman)
+            {
+                head = animator.GetBoneTransform(HumanBodyBones.Head);
+                neck = animator.GetBoneTransform(HumanBodyBones.Neck);
+                foreach (HumanBodyBones bone in new[] { HumanBodyBones.Spine, HumanBodyBones.Chest, HumanBodyBones.UpperChest })
+                {
+                    Transform t = animator.GetBoneTransform(bone);
+                    if (t != null)
+                    {
+                        spineBones.Add(t);
+                    }
+                }
+            }
+            spine = spineBones.ToArray();
             leftFoot.rotation = Quaternion.identity;
             rightFoot.rotation = Quaternion.identity;
+
+            moveWeightParams = new int[moveWeights.Length];
+            for (int i = 0; i < moveWeightParams.Length; i++)
+            {
+                moveWeightParams[i] = Animator.StringToHash("MoveWeight" + i);
+            }
+            crouchWeightParams = new int[crouchWeights.Length];
+            for (int i = 0; i < crouchWeightParams.Length; i++)
+            {
+                crouchWeightParams[i] = Animator.StringToHash("CrouchWeight" + i);
+            }
 
             string[] names = System.Enum.GetNames(typeof(AnimState));
             stateHashes = new int[names.Length];
@@ -278,8 +366,7 @@ namespace ALSUnity
 
         private bool IsLocomotionState(AnimState state)
         {
-            return state == AnimState.Idle || state == AnimState.Move || state == AnimState.Strafe ||
-                   IsCrouchState(state) || state == AnimState.Land || IsTurnState(state);
+            return state == AnimState.Idle || state == AnimState.Move || IsCrouchState(state) || state == AnimState.Land || IsTurnState(state);
         }
 
         private void UpdateStateMachine(float dt)
@@ -345,18 +432,9 @@ namespace ALSUnity
             {
                 desired = shouldMove ? AnimState.CrouchMove : AnimState.CrouchIdle;
             }
-            else if (shouldMove)
-            {
-                // Camera relative modes: forward keeps the normal locomotion (the character turns into the
-                // movement), everything else and aiming use the directional strafe blend.
-                bool strafing = character.UsesDirectionalMovement &&
-                                (character.RotationMode == ALSRotationMode.Aiming ||
-                                 character.MovementDirection != ALSMovementDirection.Forward);
-                desired = strafing ? AnimState.Strafe : AnimState.Move;
-            }
             else
             {
-                desired = AnimState.Idle;
+                desired = shouldMove ? AnimState.Move : AnimState.Idle;
             }
 
             if (desired != CurrentState)
@@ -396,10 +474,6 @@ namespace ALSUnity
             if (IsCrouchState(from) != IsCrouchState(to))
             {
                 return stanceBlendTime;
-            }
-            if ((from == AnimState.Move && to == AnimState.Strafe) || (from == AnimState.Strafe && to == AnimState.Move))
-            {
-                return directionBlendTime;
             }
             return to == AnimState.Idle || to == AnimState.CrouchIdle ? stopBlendTime : moveBlendTime;
         }
@@ -447,31 +521,115 @@ namespace ALSUnity
         private void UpdateParameters(float dt)
         {
             float speed = character.Speed;
-            animator.SetFloat(SpeedParam, speed, speedDampTime, dt);
+            bool crouching = character.Stance == ALSStance.Crouching;
+            UpdateDirectionWeights(speed, dt);
 
-            // Below the walk speed the walk cycle is slowed down instead of blended with idle.
-            float walkSpeed = character.standingSettings.walkSpeed;
-            float moveRate = speed < walkSpeed ? Mathf.Lerp(minMoveRate, 1f, speed / walkSpeed) : 1f;
-            float sprintSpeed = character.standingSettings.sprintSpeed;
-            if (speed > sprintSpeed)
+            // Walk -> jog -> sprint over the speed. Each blend is finished well before the next gait speed is
+            // reached, so that every gait mostly shows its own clip.
+            ALSMovementSettings standing = character.standingSettings;
+            float runTarget = Mathf.InverseLerp(standing.walkSpeed * 1.1f,
+                Mathf.Lerp(standing.walkSpeed, standing.runSpeed, 0.5f), speed);
+            float sprintTarget = Mathf.InverseLerp(standing.runSpeed * 1.08f,
+                Mathf.Lerp(standing.runSpeed, standing.sprintSpeed, 0.7f), speed);
+            runBlend = ALSMath.InterpTo(runBlend, runTarget, dt, gaitBlendInterpSpeed);
+            sprintBlend = ALSMath.InterpTo(sprintBlend, sprintTarget, dt, gaitBlendInterpSpeed);
+
+            float forward = directionWeights[0];
+            float right = directionWeights[1];
+            float backward = directionWeights[2];
+            float left = directionWeights[3];
+            moveWeights[(int)MoveClip.WalkForward] = forward * (1f - runBlend);
+            moveWeights[(int)MoveClip.JogForward] = forward * runBlend * (1f - sprintBlend);
+            moveWeights[(int)MoveClip.SprintForward] = forward * runBlend * sprintBlend;
+            moveWeights[(int)MoveClip.WalkBackward] = backward * (1f - runBlend);
+            moveWeights[(int)MoveClip.JogBackward] = backward * runBlend;
+            moveWeights[(int)MoveClip.StrafeLeft] = left;
+            moveWeights[(int)MoveClip.StrafeRight] = right;
+            // The crouch set has no side steps.
+            crouchWeights[0] = forward + 0.5f * (left + right);
+            crouchWeights[1] = backward + 0.5f * (left + right);
+
+            for (int i = 0; i < moveWeights.Length; i++)
             {
-                moveRate = speed / sprintSpeed;
+                animator.SetFloat(moveWeightParams[i], moveWeights[i]);
             }
-            animator.SetFloat(MoveRateParam, moveRate);
-
-            // Calculate the Crouching Play Rate by dividing the Character's speed by the Animated Speed.
-            animator.SetFloat(CrouchRateParam, Mathf.Clamp(speed / Mathf.Max(0.01f, crouchClipSpeed), 0.4f, 3f));
-            animator.SetFloat(StrafeRateParam, Mathf.Clamp(speed / Mathf.Max(0.01f, strafeClipSpeed), 0.5f, 2f));
-
-            // Velocity direction relative to the character for the strafe blend (ALS' velocity blend).
-            if (speed > 0.1f)
+            for (int i = 0; i < crouchWeights.Length; i++)
             {
-                Vector3 local = Quaternion.Inverse(character.transform.rotation) * ALSMath.Flatten(character.Velocity).normalized;
-                strafeDirection.x = ALSMath.InterpTo(strafeDirection.x, local.x, dt, 12f);
-                strafeDirection.y = ALSMath.InterpTo(strafeDirection.y, local.z, dt, 12f);
+                animator.SetFloat(crouchWeightParams[i], crouchWeights[i]);
             }
-            animator.SetFloat(DirectionXParam, strafeDirection.x);
-            animator.SetFloat(DirectionYParam, strafeDirection.y);
+
+            // Match the animation to the ground speed: the blend covers "natural" m/s at rate 1 and stride 1, the
+            // rest is split between the playback rate and the stride length (applied by the foot IK).
+            Vector2 natural = crouching
+                ? BlendedVelocity(crouchWeights, crouchClipVelocities, crouchClipLengths)
+                : BlendedVelocity(moveWeights, moveClipVelocities, moveClipLengths);
+            float ratio = speed / Mathf.Max(natural.magnitude, 0.2f);
+            float stride = 1f;
+            if (enableFootIK)
+            {
+                stride = Mathf.Pow(Mathf.Max(ratio, 1e-4f), ratio < 1f ? shortStrideShare : longStrideShare);
+                stride = Mathf.Clamp(stride, minStrideScale, crouching ? maxCrouchStrideScale : maxStrideScale);
+            }
+            float rate = Mathf.Clamp(ratio / stride, minPlayRate, maxPlayRate);
+            StrideScale = ALSMath.InterpTo(StrideScale, stride, dt, strideInterpSpeed);
+            PlayRate = ALSMath.InterpTo(PlayRate, rate, dt, strideInterpSpeed);
+            animator.SetFloat(MoveRateParam, PlayRate);
+            animator.SetFloat(CrouchRateParam, PlayRate);
+
+            // The feet travel along the direction the blend is animated for.
+            if (natural.sqrMagnitude > 0.04f)
+            {
+                strideAxis = character.transform.rotation * new Vector3(natural.x, 0f, natural.y).normalized;
+            }
+            bool moving = CurrentState == AnimState.Move || CurrentState == AnimState.CrouchMove;
+            strideBlend = ALSMath.InterpTo(strideBlend, moving ? 1f : 0f, dt, strideInterpSpeed);
+        }
+
+        /// <summary>
+        /// Weights of the forward / right / backward / left clips from the velocity direction relative to the
+        /// character (ALS' velocity blend).
+        /// </summary>
+        private void UpdateDirectionWeights(float speed, float dt)
+        {
+            if (speed <= 0.1f)
+            {
+                return;
+            }
+
+            Vector3 local = Quaternion.Inverse(character.transform.rotation) * ALSMath.Flatten(character.Velocity);
+            float sector = Mathf.Repeat(Mathf.Atan2(local.x, local.z) * Mathf.Rad2Deg, 360f) / 90f;
+            int from = Mathf.FloorToInt(sector) % 4;
+            int to = (from + 1) % 4;
+            float t = sector - Mathf.Floor(sector);
+
+            float sum = 0f;
+            for (int i = 0; i < directionWeights.Length; i++)
+            {
+                float target = i == from ? 1f - t : i == to ? t : 0f;
+                directionWeights[i] = ALSMath.InterpTo(directionWeights[i], target, dt, directionBlendInterpSpeed);
+                sum += directionWeights[i];
+            }
+            for (int i = 0; i < directionWeights.Length; i++)
+            {
+                directionWeights[i] /= sum;
+            }
+        }
+
+        /// <summary>
+        /// Ground velocity a set of blended clips covers at playback rate 1. Unity plays blended clips in step,
+        /// so one cycle of the blend lasts the weighted cycle time and covers the weighted cycle distance.
+        /// </summary>
+        private static Vector2 BlendedVelocity(float[] weights, Vector2[] velocities, float[] lengths)
+        {
+            Vector2 distance = Vector2.zero;
+            float duration = 0f;
+            int count = Mathf.Min(weights.Length, Mathf.Min(velocities.Length, lengths.Length));
+            for (int i = 0; i < count; i++)
+            {
+                distance += velocities[i] * (lengths[i] * weights[i]);
+                duration += lengths[i] * weights[i];
+            }
+            return duration > 1e-4f ? distance / duration : Vector2.zero;
         }
 
         // ------------------------------------------------------------------------------------------
@@ -746,7 +904,72 @@ namespace ALSUnity
         }
 
         // ------------------------------------------------------------------------------------------
-        // IK pass: head look and foot IK (ALSCharacterAnimInstance::UpdateFootIK / SetFootOffsets /
+        // Aim offset: the spine and head turn toward the camera after the Animator has written the pose
+        // ------------------------------------------------------------------------------------------
+
+        private void LateUpdate()
+        {
+            if (character == null || !animator.enabled || character.MovementState == ALSMovementState.Ragdoll)
+            {
+                return;
+            }
+
+            float dt = Time.deltaTime;
+            bool grounded = character.MovementState == ALSMovementState.Grounded && IsLocomotionState(CurrentState);
+            bool allowed = character.MovementAction == ALSMovementAction.None &&
+                           (grounded || character.MovementState == ALSMovementState.InAir);
+
+            // Follow the camera as long as it is not behind the character.
+            float aimYaw = Mathf.DeltaAngle(character.ActorYaw, character.AimingYaw);
+            bool active = enableHeadLook && allowed && Mathf.Abs(aimYaw) < headLookMaxAngle;
+            lookWeight = ALSMath.InterpTo(lookWeight, active ? 1f : 0f, dt, headLookInterpSpeed);
+            if (active)
+            {
+                lookYaw = ALSMath.InterpTo(lookYaw, aimYaw, dt, headLookInterpSpeed * 2f);
+                lookPitch = ALSMath.InterpTo(lookPitch, character.AimingPitch, dt, headLookInterpSpeed * 2f);
+            }
+
+            // While moving relative to the camera the hips follow the movement, so the spine takes most of the
+            // angle and the character keeps facing where the camera looks.
+            bool twisting = character.UsesDirectionalMovement &&
+                            (CurrentState == AnimState.Move || CurrentState == AnimState.CrouchMove);
+            spineShare = ALSMath.InterpTo(spineShare, twisting ? spineTwistWeight : spineIdleTwistWeight, dt,
+                headLookInterpSpeed);
+            if (lookWeight <= 0.001f)
+            {
+                return;
+            }
+
+            float yaw = lookYaw * lookWeight;
+            float spineYaw = Mathf.Clamp(yaw * spineShare, -spineMaxTwist, spineMaxTwist);
+            float headYaw = Mathf.Clamp((yaw - spineYaw) * headLookWeight, -headMaxYaw, headMaxYaw);
+            float headPitch = Mathf.Clamp(lookPitch * lookWeight * headLookWeight, -headMaxPitch, headMaxPitch);
+
+            if (spine.Length > 0)
+            {
+                Quaternion spineStep = Quaternion.AngleAxis(spineYaw / spine.Length, Vector3.up);
+                foreach (Transform bone in spine)
+                {
+                    bone.rotation = spineStep * bone.rotation;
+                }
+            }
+
+            float share = neck != null && head != null ? 0.5f : 1f;
+            Vector3 side = Quaternion.AngleAxis(character.ActorYaw + spineYaw + headYaw, Vector3.up) * Vector3.right;
+            Quaternion headStep = Quaternion.AngleAxis(headPitch * share, side) *
+                                  Quaternion.AngleAxis(headYaw * share, Vector3.up);
+            if (neck != null)
+            {
+                neck.rotation = headStep * neck.rotation;
+            }
+            if (head != null)
+            {
+                head.rotation = headStep * head.rotation;
+            }
+        }
+
+        // ------------------------------------------------------------------------------------------
+        // IK pass: stride length and foot IK (ALSCharacterAnimInstance::UpdateFootIK / SetFootOffsets /
         // SetPelvisIKOffset)
         // ------------------------------------------------------------------------------------------
 
@@ -757,30 +980,9 @@ namespace ALSUnity
                 return;
             }
 
-            float dt = Time.deltaTime;
-            bool grounded = character.MovementState == ALSMovementState.Grounded &&
-                            character.MovementAction == ALSMovementAction.None;
-            bool locomotion = grounded && IsLocomotionState(CurrentState);
-
-            UpdateHeadLook(dt, locomotion || (character.MovementState == ALSMovementState.InAir &&
-                                              character.MovementAction == ALSMovementAction.None));
-            UpdateFootIK(dt, enableFootIK && locomotion);
-        }
-
-        private void UpdateHeadLook(float dt, bool allowed)
-        {
-            // Look where the camera looks, as long as that is not behind the character.
-            float aimAngle = Mathf.Abs(Mathf.DeltaAngle(character.ActorYaw, character.AimingYaw));
-            bool active = enableHeadLook && allowed && aimAngle < headLookMaxAngle;
-            lookWeight = ALSMath.InterpTo(lookWeight, active ? 1f : 0f, dt, headLookInterpSpeed);
-            if (lookWeight <= 0.001f)
-            {
-                return;
-            }
-
-            Vector3 aimDirection = Quaternion.Euler(character.AimingPitch, character.AimingYaw, 0f) * Vector3.forward;
-            animator.SetLookAtWeight(lookWeight * headLookWeight, 0.15f, 0.7f, 0f, 0.6f);
-            animator.SetLookAtPosition(GetHeadPosition() + aimDirection * 10f);
+            bool locomotion = character.MovementState == ALSMovementState.Grounded &&
+                              character.MovementAction == ALSMovementAction.None && IsLocomotionState(CurrentState);
+            UpdateFootIK(Time.deltaTime, enableFootIK && locomotion);
         }
 
         private void UpdateFootIK(float dt, bool active)
@@ -795,8 +997,11 @@ namespace ALSUnity
                 return;
             }
 
-            Vector3 leftPosition = animator.GetIKPosition(AvatarIKGoal.LeftFoot);
-            Vector3 rightPosition = animator.GetIKPosition(AvatarIKGoal.RightFoot);
+            // Stride length: move the feet toward / away from the body along the direction of travel.
+            float stride = Mathf.Lerp(1f, StrideScale, strideBlend);
+            stridePivot = animator.bodyPosition;
+            Vector3 leftPosition = ScaleStride(animator.GetIKPosition(AvatarIKGoal.LeftFoot), stride);
+            Vector3 rightPosition = ScaleStride(animator.GetIKPosition(AvatarIKGoal.RightFoot), stride);
             Quaternion leftRotation = animator.GetIKRotation(AvatarIKGoal.LeftFoot);
             Quaternion rightRotation = animator.GetIKRotation(AvatarIKGoal.RightFoot);
 
@@ -809,10 +1014,17 @@ namespace ALSUnity
             float pelvisSpeed = pelvisTarget > pelvisOffset ? 10f : 15f;
             pelvisOffset = ALSMath.InterpTo(pelvisOffset, pelvisTarget, dt, pelvisSpeed);
 
-            animator.bodyPosition += Vector3.up * ((pelvisOffset - landDip) * ikWeight);
+            float strideDrop = Mathf.Max(0f, stride - 1f) * pelvisDropPerStride;
+            animator.bodyPosition += Vector3.up * ((pelvisOffset - landDip - strideDrop) * ikWeight);
 
             ApplyFoot(AvatarIKGoal.LeftFoot, leftFoot, leftPosition, leftRotation);
             ApplyFoot(AvatarIKGoal.RightFoot, rightFoot, rightPosition, rightRotation);
+        }
+
+        private Vector3 ScaleStride(Vector3 footPosition, float stride)
+        {
+            float along = Vector3.Dot(footPosition - stridePivot, strideAxis);
+            return footPosition + strideAxis * (along * (stride - 1f));
         }
 
         private void UpdateFootOffset(ref FootIK foot, Vector3 footPosition, float dt)

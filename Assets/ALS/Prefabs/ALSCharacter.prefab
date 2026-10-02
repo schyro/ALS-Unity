@@ -75,13 +75,13 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::ALSUnity.ALSCharacter
   standingSettings:
-    walkSpeed: 1.65
-    runSpeed: 3.5
-    sprintSpeed: 6
+    walkSpeed: 1.5
+    runSpeed: 4
+    sprintSpeed: 6.5
   crouchingSettings:
-    walkSpeed: 1.1
-    runSpeed: 1.8
-    sprintSpeed: 1.8
+    walkSpeed: 0.9
+    runSpeed: 1.5
+    sprintSpeed: 1.5
   movementModel:
     maxAcceleration:
       serializedVersion: 2
@@ -274,11 +274,13 @@ MonoBehaviour:
   rollDoubleTapTimeout: 0.3
   rollPlayRate: 1.15
   breakfallPlayRate: 1.35
-  desiredRotationMode: 0
+  desiredRotationMode: 1
   desiredGait: 1
   desiredStance: 0
-  strafeSpeed: 1.1
-  backwardSpeed: 1.2
+  backwardSpeedScale: 0.8
+  aimStrafeSpeed: 1.2
+  backwardEnterAngle: 115
+  backwardExitAngle: 95
   yawOffsetInterpSpeed: 8
   worldMask:
     serializedVersion: 2
@@ -810,11 +812,17 @@ MonoBehaviour:
   moveBlendTime: 0.2
   stopBlendTime: 0.25
   stanceBlendTime: 0.25
-  directionBlendTime: 0.25
-  minMoveRate: 0.55
-  crouchClipSpeed: 0.75
-  strafeClipSpeed: 1.2
-  speedDampTime: 0.06
+  gaitBlendInterpSpeed: 8
+  directionBlendInterpSpeed: 10
+  shortStrideShare: 0.9
+  longStrideShare: 0.5
+  minStrideScale: 0.3
+  maxStrideScale: 1.25
+  maxCrouchStrideScale: 1.4
+  minPlayRate: 0.5
+  maxPlayRate: 1.8
+  strideInterpSpeed: 12
+  pelvisDropPerStride: 0.14
   jumpStartOffset: 0.07
   jumpBlendTime: 0.1
   fallBlendTime: 0.3
@@ -959,8 +967,13 @@ MonoBehaviour:
     m_RotationOrder: 4
   enableHeadLook: 1
   headLookWeight: 0.75
-  headLookMaxAngle: 100
-  headLookInterpSpeed: 5
+  headLookMaxAngle: 150
+  headLookInterpSpeed: 6
+  headMaxYaw: 65
+  headMaxPitch: 35
+  spineTwistWeight: 0.7
+  spineIdleTwistWeight: 0.2
+  spineMaxTwist: 60
   enableFootIK: 1
   ikTraceAboveFoot: 0.5
   ikTraceBelowFoot: 0.45
@@ -978,6 +991,28 @@ MonoBehaviour:
   getUpFrontLength: 1.5
   turn90Length: 2
   turn180Length: 2.125
+  moveClipVelocities:
+  - {x: 0.000021457672, y: 0.975353}
+  - {x: 0.02607107, y: 5.9465775}
+  - {x: 0.012788773, y: 8.816324}
+  - {x: -0.0004271418, y: -0.97659767}
+  - {x: -0.02149982, y: -5.921152}
+  - {x: -0.7178363, y: 0.1301641}
+  - {x: 0.7178363, y: 0.1301641}
+  moveClipLengths:
+  - 1.3333334
+  - 0.9333334
+  - 0.6666667
+  - 1.3333334
+  - 0.9333334
+  - 0.9583334
+  - 0.9583334
+  crouchClipVelocities:
+  - {x: -0.0024729965, y: 0.7293516}
+  - {x: 0.0026518104, y: -0.72641724}
+  crouchClipLengths:
+  - 2
+  - 2
   turnRotationCurves:
   - serializedVersion: 2
     m_Curve:
